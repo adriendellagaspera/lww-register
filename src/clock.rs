@@ -12,6 +12,7 @@
 //! the injectable clock port; [`assert_conformance`] checks the runtime monotonicity contract.
 //! This crate does not read wall-clock time; adapters do.
 
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 mod admitted;
@@ -25,32 +26,28 @@ mod timestamp;
 pub struct ClockDrift(u64);
 
 /// Default maximum a remote clock may lead physical time before its [`PhysicalTime`] is clamped.
-/// One hour: orders of magnitude above any NTP-plausible skew, still finite. Without a cap, one
-/// unauthenticated packet stamped near `u64::MAX` pins every node's clock there permanently.
-/// Overridable per clock (`HlcClock::with_max_clock_drift`).
-/// Scope: the *local clock state* only, as covered in this module's docs above.
+/// One hour: orders of magnitude above ordinary clock skew, still finite. Without a cap, an
+/// untrusted timestamp near `u64::MAX` can pin local clock state there permanently.
+/// Concrete [`Clock`] adapters may choose a different admission budget.
 pub const MAX_CLOCK_DRIFT: ClockDrift = ClockDrift::from_millis(3_600_000); // 1 hour
 
 /// The **physical time** of a [`Timestamp`]: an instant, in milliseconds since the Unix epoch.
 /// Arithmetic on it is narrow and saturating, so no call site reasons about wrapping.
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct PhysicalTime(u64);
 
 /// The **logical counter** of a [`Timestamp`]: disambiguates events in one [`PhysicalTime`].
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct LogicalCounter(u32);
 
 /// Replica identity used as the deterministic final tie-break in [`Timestamp`] ordering.
 ///
-/// Live replicas must use distinct IDs. The `reconcile` facade generates one randomly by default
-/// and allows callers to pin it; an ID collision can prevent conflicting writes from converging.
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+/// Independently writing replicas must use distinct IDs. An ID collision can mint identical
+/// timestamps for distinct conflicting writes and therefore prevent convergence.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct NodeId(u64);
 
 /// A remote physical-time reading admitted to the local clock state under the drift policy.
@@ -63,9 +60,8 @@ pub struct AdmittedTime {
 }
 
 /// A Hybrid Logical Clock reading: `(physical, logical)`.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Hlc {
     /// Physical time: the instant last observed by the clock.
     physical: PhysicalTime,
@@ -75,10 +71,9 @@ pub struct Hlc {
 
 /// The LWW ordering key: `(physical, logical, node_id)`.
 ///
-/// Field declaration order defines the serialized conflict order.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default,
-)]
+/// Field declaration order defines the derived [`Ord`] conflict order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Timestamp {
     /// The clock reading: what time it was, as this node's clock sees time.
     hlc: Hlc,
@@ -86,12 +81,11 @@ pub struct Timestamp {
     node_id: NodeId,
 }
 
-/// The domain's **clock port**: the adapter behind it performs the single
-/// physical-time read and owns this node's [`NodeId`].
-/// Concrete [`Timestamp`] rather than an associated type, so the port stays object-safe and no
-/// clock parameter leaks into the engine.
-/// A minimal, correct implementor -- verified against [`assert_conformance`], the check every
-/// real adapter should run before it is trusted in production:
+/// Clock port for minting and observing [`Timestamp`] values.
+///
+/// The implementation owns physical-time reads and this writer's [`NodeId`]. The concrete
+/// [`Timestamp`] return type keeps the trait object-safe. Use [`assert_conformance`] to check a
+/// clock implementation's required ordering behavior.
 pub trait Clock: Send + Sync + 'static {
     /// Mint a strictly-monotonic local timestamp for a write or an outgoing message.
     fn now(&self) -> Timestamp;
@@ -102,8 +96,8 @@ pub trait Clock: Send + Sync + 'static {
     /// [`MAX_CLOCK_DRIFT`] via [`AdmittedTime::clamped_to_drift`]. The [`Timestamp`] order and the
     /// strict-`>` merge are unaffected.
     fn observe(&self, remote: Timestamp);
-    /// Advance past a stamp **this node itself authored**, so the first post-restart
-    /// [`now`](Clock::now) outranks every pre-restart write.
+    /// Advance past a stamp **this node itself authored**, for example one restored from durable
+    /// state, so the next [`now`](Clock::now) outranks it.
     /// Implementations must **not** clamp here — the one caller entitled to
     /// [`AdmittedTime::trusted`] — or a backward clock step re-introduces own-write shadowing. No
     /// default body: delegating to [`observe`](Clock::observe) is only sound for a clamp-free
