@@ -15,8 +15,8 @@ use super::{Hlc, LogicalCounter, NodeId, PhysicalTime, Timestamp};
 impl Timestamp {
     /// Pair a clock reading with the identity of the node minting it.
     ///
-    /// For tests and for reconstruction from external storage; normal code goes through the
-    /// store's clock.
+    /// For tests, deterministic construction and reconstruction from external storage; ordinary
+    /// write paths should normally mint timestamps through a [`Clock`](super::Clock).
     pub const fn new(hlc: Hlc, node_id: NodeId) -> Timestamp {
         Timestamp { hlc, node_id }
     }

@@ -5,18 +5,25 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! The [`Entry`] / [`State`] domain types:
-//! [`Entry`] is the stored cell and [`Entry::merge`] the LWW policy; [`State<V>`] is its
-//! timestamp-less projection, which a dateless `ReadReplicaMap` stores directly.
-//! The two summaries stay distinct **structurally** — [`Entry`] has a `stamp` field, [`State`] has
-//! none — so every field-by-field content summary inherits it.
+//! Last-write-wins register state.
+//!
+//! [`Entry`] stores a value (or tombstone) plus a conflict-resolution stamp.
+//! [`Entry::merge`] selects the entry with the greater stamp. [`State<V>`] is the same value
+//! state with the stamp projected away.
+//!
+//! For CRDT convergence, distinct conflicting writes must receive distinct stamps from one global
+//! total order. The provided [`Timestamp`](crate::Timestamp) satisfies that requirement when each
+//! live writer has a distinct [`NodeId`](crate::NodeId) and uses a conforming
+//! [`Clock`](crate::Clock).
 
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 /// A timestamp-less projection of a value: a live value or a tombstone.
 /// Isomorphic to `Option<V>`, but carrying no [`Timestamp`](crate::clock::Timestamp) field there
 /// is none to include in a content summary.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum State<V> {
     /// A live value.
     Present(V),
@@ -66,7 +73,8 @@ impl<V> From<State<V>> for Option<V> {
 }
 
 /// A stored cell: a value or tombstone stamped with a conflict-resolution token `T`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Entry<T, V> {
     /// The conflict-resolution stamp.
     pub stamp: T,
@@ -115,17 +123,20 @@ impl<T, V> Entry<T, V> {
     }
 }
 
-impl<T: Ord + Copy, V: Clone> Entry<T, V> {
-    /// Project to the timestamp-less [`State<V>`] a `ReadReplicaMap` converges on
-    /// .
+impl<T: Ord + Clone, V: Clone> Entry<T, V> {
+    /// Project this entry to its timestamp-less [`State<V>`].
     pub fn project(&self) -> State<V> {
         self.state.clone()
     }
 
-    /// Last-write-wins: the entry with the strictly greater `stamp` wins.
-    /// `max` over a total order, hence commutative, associative and idempotent.
+    /// Last-write-wins merge: the entry with the strictly greater `stamp` wins.
+    ///
+    /// Equal stamps retain `self`. The operation is therefore commutative for distinct writes
+    /// only when conflicting writes cannot reuse the same stamp. That uniqueness requirement is
+    /// part of the CRDT contract; [`Timestamp`](crate::Timestamp) provides a suitable ordering
+    /// when writers have distinct node IDs and their clocks satisfy [`Clock`](crate::Clock).
     pub fn merge(&self, other: &Self) -> Self {
-        if other.stamp > self.stamp {
+        if other.stamp.cmp(&self.stamp).is_gt() {
             other.clone()
         } else {
             self.clone()
@@ -164,6 +175,19 @@ mod tests {
         );
         assert_eq!(a.merge(&b), b.merge(&a));
         assert_eq!(a.merge(&b).value(), Some(&"b"));
+    }
+
+    #[test]
+    fn equal_stamp_collision_is_left_biased() {
+        let stamp = Timestamp::new(
+            Hlc::new(PhysicalTime::from_millis(100), LogicalCounter::new(0)),
+            NodeId::new(1),
+        );
+        let a = Entry::present(stamp, "a");
+        let b = Entry::present(stamp, "b");
+
+        assert_eq!(a.merge(&b), a);
+        assert_eq!(b.merge(&a), b);
     }
 
     #[test]
