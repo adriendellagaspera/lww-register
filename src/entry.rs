@@ -242,6 +242,35 @@ mod tests {
     }
 
     #[test]
+    fn mutable_accessors_modify_present_values() {
+        let mut state = State::Present(41);
+        *state.as_value_mut().expect("present state must be mutable") += 1;
+        assert_eq!(state, State::Present(42));
+
+        let mut entry = Entry::present(
+            Timestamp::new(
+                Hlc::new(PhysicalTime::from_millis(1), LogicalCounter::ZERO),
+                NodeId::new(0),
+            ),
+            41,
+        );
+        *entry.value_mut().expect("present entry must be mutable") += 1;
+        assert_eq!(entry.value(), Some(&42));
+
+        let mut tombstone: State<i32> = State::Tombstone;
+        assert!(tombstone.as_value_mut().is_none());
+    }
+
+    #[test]
+    fn state_into_option_preserves_live_value_and_tombstone() {
+        let present: Option<i32> = State::Present(7).into();
+        let tombstone: Option<i32> = State::Tombstone.into();
+
+        assert_eq!(present, Some(7));
+        assert_eq!(tombstone, None);
+    }
+
+    #[test]
     fn project_is_isomorphic_to_option() {
         let live = Entry::present(
             Timestamp::new(
