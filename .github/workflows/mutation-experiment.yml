@@ -11,13 +11,14 @@ env:
 
 jobs:
   mutants:
-    name: mutants (jobs=${{ matrix.local_jobs }})
+    name: mutants (jobs=${{ matrix.local_jobs }}, repeat=${{ matrix.repeat }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        local_jobs: [1, 2, 3]
+        local_jobs: [2, 3]
+        repeat: [1, 2]
 
     steps:
       - uses: actions/checkout@v4
