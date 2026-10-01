@@ -1,4 +1,4 @@
-name: mutation experiment
+name: mutation profile experiment
 
 on:
   pull_request:
@@ -11,9 +11,13 @@ env:
 
 jobs:
   mutants:
-    name: mutants
+    name: mutants (${{ matrix.variant }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [default, no-debug]
 
     steps:
       - uses: actions/checkout@v4
@@ -33,8 +37,13 @@ jobs:
           echo "mutant_count=$(wc -l < mutant-list.txt)"
 
       - name: Run mutations
+        env:
+          VARIANT: ${{ matrix.variant }}
         run: |
           set -euo pipefail
+          if test "${VARIANT}" = "no-debug"; then
+            export CARGO_PROFILE_TEST_DEBUG=0
+          fi
           cargo mutants \
             --all-features \
             --jobs 2 \
