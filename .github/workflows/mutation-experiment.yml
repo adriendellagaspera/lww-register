@@ -11,13 +11,14 @@ env:
 
 jobs:
   mutants:
-    name: mutants (${{ matrix.variant }})
+    name: mutants (${{ matrix.variant }}, repeat=${{ matrix.repeat }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         variant: [default, no-debug]
+        repeat: [1, 2]
 
     steps:
       - uses: actions/checkout@v4
