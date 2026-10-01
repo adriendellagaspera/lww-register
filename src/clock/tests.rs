@@ -55,6 +55,10 @@ fn total_order_is_physical_then_logical_then_node_id() {
 /// kind still shows up as wrong for at least one of them.
 #[test]
 fn newtype_accessors_round_trip_their_constructor_argument() {
+    for v in [0, 1, 7, u64::MAX] {
+        assert_eq!(ClockDrift::from_millis(v).millis(), v);
+        assert_eq!(PhysicalTime::from_millis(v).millis(), v);
+    }
     for v in [0, 1, 7, u32::MAX] {
         assert_eq!(LogicalCounter::new(v).get(), v);
     }
