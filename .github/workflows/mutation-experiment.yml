@@ -1,4 +1,4 @@
-name: mutation profile experiment
+name: mutation proof-cache experiment
 
 on:
   pull_request:
@@ -8,18 +8,12 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: never
+  CARGO_PROFILE_TEST_DEBUG: "0"
 
 jobs:
   mutants:
-    name: mutants (${{ matrix.variant }}, repeat=${{ matrix.repeat }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [default, no-debug]
-        repeat: [1, 2]
-
     steps:
       - uses: actions/checkout@v4
 
@@ -30,31 +24,89 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0
 
-      - name: Record tool version and mutant count
+      - name: Compute mutation fingerprint
+        id: fingerprint
         run: |
           set -euo pipefail
-          cargo mutants --version
-          cargo mutants --all-features --list | tee mutant-list.txt
-          echo "mutant_count=$(wc -l < mutant-list.txt)"
+          cargo generate-lockfile
+          rustc -Vv > .mutation-rustc.txt
+          cargo mutants --version > .mutation-tool.txt
+          cargo mutants --all-features --list > .mutation-mutants.txt
+          python3 - <<'PY' > .mutation-fingerprint.txt
+          import hashlib
+          from pathlib import Path
 
-      - name: Run mutations
+          root = Path(".")
+          explicit = [
+              Path("Cargo.toml"),
+              Path("Cargo.lock"),
+              Path(".github/workflows/mutation-experiment.yml"),
+          ]
+          paths = {
+              p for p in root.rglob("*.rs")
+              if "target" not in p.parts and "mutants.out" not in p.parts
+          }
+          paths.update(p for p in root.glob(".cargo/**/*.toml"))
+          paths.update(p for p in explicit if p.exists())
+
+          h = hashlib.sha256()
+          for path in sorted(paths, key=lambda p: p.as_posix()):
+              h.update(path.as_posix().encode())
+              h.update(b"\0")
+              h.update(path.read_bytes())
+              h.update(b"\0")
+
+          for path in [
+              Path(".mutation-rustc.txt"),
+              Path(".mutation-tool.txt"),
+              Path(".mutation-mutants.txt"),
+          ]:
+              h.update(path.read_bytes())
+              h.update(b"\0")
+
+          h.update(b"all-features\0jobs=2\0test-debug=0\0")
+          print(h.hexdigest())
+          PY
+          fingerprint="$(cat .mutation-fingerprint.txt)"
+          echo "value=${fingerprint}" >> "${GITHUB_OUTPUT}"
+          echo "fingerprint=${fingerprint}"
+
+      - name: Restore successful mutation proof
+        id: restore
+        uses: actions/cache/restore@v4
+        with:
+          path: .mutation-proof
+          key: mutation-proof-v1-${{ steps.fingerprint.outputs.value }}
+
+      - name: Validate restored proof
+        if: steps.restore.outputs.cache-hit == 'true'
         env:
-          VARIANT: ${{ matrix.variant }}
+          FINGERPRINT: ${{ steps.fingerprint.outputs.value }}
         run: |
           set -euo pipefail
-          if test "${VARIANT}" = "no-debug"; then
-            export CARGO_PROFILE_TEST_DEBUG=0
-          fi
+          test "$(cat .mutation-proof/fingerprint)" = "${FINGERPRINT}"
+          test "$(cat .mutation-proof/status)" = "success"
+          echo "Reusing validated successful mutation proof."
+
+      - name: Run mutations on cache miss
+        if: steps.restore.outputs.cache-hit != 'true'
+        env:
+          FINGERPRINT: ${{ steps.fingerprint.outputs.value }}
+        run: |
+          set -euo pipefail
           cargo mutants \
             --all-features \
             --jobs 2 \
             --no-shuffle \
             --caught \
             --unviable
+          mkdir -p .mutation-proof
+          printf '%s\n' "${FINGERPRINT}" > .mutation-proof/fingerprint
+          printf '%s\n' success > .mutation-proof/status
 
-      - name: Print machine-readable outcome
-        if: always()
-        run: |
-          if test -f mutants.out/outcomes.json; then
-            cat mutants.out/outcomes.json
-          fi
+      - name: Save successful mutation proof
+        if: success() && steps.restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .mutation-proof
+          key: mutation-proof-v1-${{ steps.fingerprint.outputs.value }}
