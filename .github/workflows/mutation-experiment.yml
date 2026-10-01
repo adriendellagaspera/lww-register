@@ -11,14 +11,9 @@ env:
 
 jobs:
   mutants:
-    name: mutants (jobs=${{ matrix.local_jobs }}, repeat=${{ matrix.repeat }})
+    name: mutants
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        local_jobs: [2, 3]
-        repeat: [1, 2]
 
     steps:
       - uses: actions/checkout@v4
@@ -38,13 +33,11 @@ jobs:
           echo "mutant_count=$(wc -l < mutant-list.txt)"
 
       - name: Run mutations
-        env:
-          LOCAL_JOBS: ${{ matrix.local_jobs }}
         run: |
           set -euo pipefail
           cargo mutants \
             --all-features \
-            --jobs "${LOCAL_JOBS}" \
+            --jobs 2 \
             --no-shuffle \
             --caught \
             --unviable
